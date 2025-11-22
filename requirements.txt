@@ -1,0 +1,6 @@
+streamlit==1.51.0
+pandas>=1.4.0
+plotly-express
+wordcloud==1.9.4
+folium
+streamlit-folium
