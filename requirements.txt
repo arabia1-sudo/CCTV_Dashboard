@@ -4,3 +4,6 @@ plotly-express
 wordcloud==1.9.4
 folium
 streamlit-folium
+numpy
+matplotlib
+seaborn

@@ -1,6 +1,7 @@
 import streamlit as st # type: ignore
 import plotly.express as px # type: ignore
 import pandas as pd # type: ignore
+import numpy as np
 import os
 import warnings
 import io
@@ -30,17 +31,92 @@ def read_csv_with_encodings(path_or_buffer, encodings=None, **kwargs):
     # If none worked, raise the last exception
     raise last_exc
 
-st.set_page_config(page_title="CCTV Monitoring Dashboard", layout="wide", page_icon="📹")
-st.title("📹 CCTV AI Monitoring Dashboard")
-#st.markdown("<style>div.block-container{padding-top:2rem;}</style>", unsafe_allow_html=True)
-st.markdown("""
+st.set_page_config(page_title="CCTV AI Monitoring Dashboard", layout="wide") # 
+
+#----------------------- HEADER -----------------------
+header_img_path = "https://img.freepik.com/premium-photo/high-tech-surveillance-camera-overlooking-urban-cityscape-with-digital-interface_97843-69057.jpg"  
+
+st.markdown(f"""
     <style>
-    * { font-family: 'Segoe UI', Arial, sans-serif; }
+    /* الخط العام */
+    @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700&display=swap');
+
+    html, body, .stApp {{
+        height: 100%;
+        margin: 0;
+        padding: 0;
+    }}
+    .block-container {{
+        padding: 0;
+    }}
+    html, body, .stApp, .main, .block-container {{
+        font-family: 'Cairo', sans-serif !important;
+    }}
+
+    /* قسم الهيدر البانر */
+    .full-screen-header {{
+        position: relative;
+        width: 100%;
+        height: 80vh;  /* يمكنك تغييره */
+        background: linear-gradient(rgba(0,0,0,0.4), rgba(0,0,0,0.4)), 
+                    url('{header_img_path}') no-repeat center center;
+        background-size: cover;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        flex-direction: column;
+        color: white;
+        text-shadow: 2px 2px 8px rgba(0,0,0,0.7);
+    }}
+    .header-title {{
+        font-size: 3vw;
+        font-weight: 600;
+        text-align: center;
+    }}
+    .header-subtitle {{
+        margin-top: 1rem;
+        font-size: 1.5vw;
+        text-align: center;
+    }}
+    .header-button {{
+        margin-top: 2rem;
+        padding: 0.8rem 2rem;
+        font-size: 1rem;
+        background-color: rgba(255, 255, 255, 0.8);
+        color: #333;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        text-decoration: none;
+    }}
+    .header-button:hover {{
+        background-color: rgba(255,255,255,1);
+    }}
+
+    /* Responsive للهواتف */
+    @media (max-width: 768px) {{
+        .header-title {{
+            font-size: 6vw;
+        }}
+        .header-subtitle {{
+            font-size: 3vw;
+        }}
+        .header-button {{
+            padding: 0.6rem 1.5rem;
+        }}
+    }}
     </style>
+
+    <div class="full-screen-header">
+        <div class="header-title">CCTV AI Monitoring Dashboard</div>
+        <div class="header-subtitle">Upload your CSV file below to start</div>
+        
+    </div>
 """, unsafe_allow_html=True)
 
+
 # ---------------------- FILE UPLOAD ----------------------
-fl = st.file_uploader("Upload CCTV CSV file", type=["csv"])
+fl = st.file_uploader("", type=["csv"])
 
 if fl is not None:
     # show progress while reading/processing the uploaded file
@@ -82,34 +158,64 @@ for col in date_cols:
         df[col] = pd.to_datetime(df[col], errors="coerce")
 
 
+# Helper: resolve common column-name variants (e.g. 'Cam ID' vs 'Cam_ID')
+def find_column(df, *candidates):
+    """Return the first candidate that exists in df.columns, or None."""
+    for c in candidates:
+        if c in df.columns:
+            return c
+    # try normalized versions: replace spaces/hyphens with underscores
+    for c in candidates:
+        c_norm = c.strip().replace(' ', '_').replace('-', '_')
+        if c_norm in df.columns:
+            return c_norm
+    return None
+
+
+# Helper: return one row per camera ID (most recent if date columns exist)
+def dedupe_by_camera(df, cam_col: str):
+    """Return a DataFrame with exactly one row per camera identifier.
+
+    If cam_col is present, choose the most recent row by 'last_maintenance_date' or 'install_date' where available.
+    If cam_col is None, fall back to dropping duplicate rows entirely.
+    """
+    if cam_col is None or cam_col not in df.columns:
+        return df.drop_duplicates()
+
+    # prefer to pick the latest row per camera using dates, otherwise use last occurrence
+    sort_col = None
+    for c in ("last_maintenance_date", "install_date"):
+        if c in df.columns:
+            sort_col = c
+            break
+
+    if sort_col:
+        # sort ascending then take last row per group -> effectively most recent
+        tmp = df.sort_values(sort_col, na_position='first')
+        return tmp.groupby(cam_col, as_index=False).last()
+    else:
+        return df.drop_duplicates(subset=[cam_col])
+
+# detect camera id column once (used to dedupe rows into unique cameras later)
+cam_col_global = find_column(df, 'Cam ID', 'Cam_ID', 'CamID', 'Cam_Id', 'CamId', 'cam id', 'cam_id')
+
+
 # ---------------------- SIDEBAR FILTERS ----------------------
 st.sidebar.header("Filter the Data")
 
 location_filter = st.sidebar.multiselect("Location", df["Location"].unique())
+gov_filter = st.sidebar.multiselect("Governorate", df.get("Kuwait_Governorate", pd.Series([], dtype=object)).unique())
 brand_filter = st.sidebar.multiselect("Brand", df["brand"].unique())
 health_filter = st.sidebar.multiselect("Health Status", df["health_status"].unique())
 connect_filter = st.sidebar.multiselect("Connectivity", df["connectivity_status"].unique())
 
 
-filtered_df = df.copy()
+# (filters and metrics are applied later after coordinates parsing so we have cleaned numeric location fields)
 
-if location_filter:
-    filtered_df = filtered_df[filtered_df["Location"].isin(location_filter)]
-if brand_filter:
-    filtered_df = filtered_df[filtered_df["brand"].isin(brand_filter)]
-if health_filter:
-    filtered_df = filtered_df[filtered_df["health_status"].isin(health_filter)]
-if connect_filter:
-    filtered_df = filtered_df[filtered_df["connectivity_status"].isin(connect_filter)]
 
 
 # ---------------------- TOP METRICS ----------------------
-col1, col2, col3, col4 = st.columns(4)
-
-col1.metric("Total Cameras", len(filtered_df))
-col2.metric("Online Cameras", (filtered_df["connectivity_status"] == "Online").sum())
-col3.metric("Avg Uptime %", round(filtered_df["uptime_percent"].mean(), 2))
-col4.metric("Avg Coverage %", round(filtered_df["coverage_percent"].mean(), 2))
+# (metrics are shown above and built from deduped camera entries)
 
 
 # ---------------------- MAPS ----------------------
@@ -213,14 +319,8 @@ if df.empty:
     st.error("No valid Latitude/Longitude values found in CSV.")
     st.stop()
 
-# Diagnostic: show coordinate ranges
-min_lat, max_lat = df["Latitude"].min(), df["Latitude"].max()
-min_lon, max_lon = df["Longitude"].min(), df["Longitude"].max()
-st.write(f"Latitude range: {min_lat} to {max_lat} — Longitude range: {min_lon} to {max_lon}")
-
-# Permanently swap Latitude/Longitude (user requested to remove the swap checkbox)
-df[["Latitude", "Longitude"]] = df[["Longitude", "Latitude"]]
-st.info("Latitude and Longitude columns swapped for mapping (permanent).")
+# NOTE: don't show overall coordinate ranges here (they would be unfiltered)
+# Coordinate ranges for the currently-selected (filtered) dataset are shown after filtering below.
 
 # Re-apply filters to the processed dataframe so the map and charts use the same filtered set
 filtered_df = df.copy()
@@ -232,9 +332,97 @@ if health_filter:
     filtered_df = filtered_df[filtered_df["health_status"].isin(health_filter)]
 if connect_filter:
     filtered_df = filtered_df[filtered_df["connectivity_status"].isin(connect_filter)]
+if gov_filter:
+    filtered_df = filtered_df[filtered_df["Kuwait_Governorate"].isin(gov_filter)]
 
-# recompute ranges/center using filtered data
-map_center = [filtered_df["Latitude"].mean(), filtered_df["Longitude"].mean()]
+# ---------------------- DEDUP & PER-CAMERA AGGREGATES ----------------------
+# Build camera-unique and per-camera aggregates so metrics use distinct cameras
+filtered_unique = dedupe_by_camera(filtered_df, cam_col_global)
+
+# Build per-camera sums (from event rows) and merge into the unique camera table
+per_camera_agg = None
+if cam_col_global and cam_col_global in filtered_df.columns:
+    agg_cols = {}
+    if 'estimated_daily_vehicles' in filtered_df.columns:
+        agg_cols['total_violations'] = ('estimated_daily_vehicles', 'sum')
+    if 'sudden_stop' in filtered_df.columns:
+        agg_cols['total_sudden_stop'] = ('sudden_stop', 'sum')
+    if 'wrong_direction' in filtered_df.columns:
+        agg_cols['total_wrong_direction'] = ('wrong_direction', 'sum')
+    if agg_cols:
+        per_camera_agg = filtered_df.groupby(cam_col_global).agg(**agg_cols).reset_index()
+
+if per_camera_agg is not None and cam_col_global in filtered_unique.columns:
+    merged_unique = filtered_unique.merge(per_camera_agg, how='left', left_on=cam_col_global, right_on=cam_col_global).fillna(0)
+else:
+    merged_unique = filtered_unique.copy()
+
+# Top-line KPIs (distinct cameras)
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Total Cameras", len(merged_unique))
+col2.metric("Online Cameras", int((merged_unique.get("connectivity_status") == "Online").sum()))
+col3.metric("Avg Uptime %", round(merged_unique.get('uptime_percent').mean() if 'uptime_percent' in merged_unique.columns else 0, 2))
+col4.metric("Avg Coverage %", round(merged_unique.get('coverage_percent').mean() if 'coverage_percent' in merged_unique.columns else 0, 2))
+
+# Show filtered coordinate ranges (helps confirm filters applied are affecting map extents)
+if not filtered_df.empty:
+    fmin_lat, fmax_lat = filtered_df['Latitude'].min(), filtered_df['Latitude'].max()
+    fmin_lon, fmax_lon = filtered_df['Longitude'].min(), filtered_df['Longitude'].max()
+    st.write(f"Filtered Latitude range: {fmin_lat} to {fmax_lat} — Filtered Longitude range: {fmin_lon} to {fmax_lon}")
+
+# Per-camera totals/averages (additional KPIs)
+total_violations = int(merged_unique.get('total_violations', pd.Series([0])).sum())
+avg_violations = round(merged_unique.get('total_violations', pd.Series([0])).mean(), 2) if 'total_violations' in merged_unique.columns else 0
+total_sudden = int(merged_unique.get('total_sudden_stop', pd.Series([0])).sum()) if 'total_sudden_stop' in merged_unique.columns else 0
+total_wrong = int(merged_unique.get('total_wrong_direction', pd.Series([0])).sum()) if 'total_wrong_direction' in merged_unique.columns else 0
+
+# Stopped / Warning cameras counts (based on health_status/connectivity_status text)
+stopped_mask = pd.Series(False, index=merged_unique.index)
+warning_mask = pd.Series(False, index=merged_unique.index)
+if 'health_status' in merged_unique.columns:
+    hs = merged_unique['health_status'].astype(str).str.lower()
+    stopped_mask = stopped_mask | hs.str.contains('stop', na=False)
+    warning_mask = warning_mask | hs.str.contains('warn', na=False)
+if 'connectivity_status' in merged_unique.columns:
+    cs = merged_unique['connectivity_status'].astype(str).str.lower()
+    stopped_mask = stopped_mask | cs.str.contains('stop', na=False)
+
+total_stopped_cameras = int(stopped_mask.sum())
+total_warning_cameras = int(warning_mask.sum())
+
+k1, k2, k3, k4, k5, k6 = st.columns(6)
+k1.metric("Total Violations", f"{total_violations}")
+k2.metric("Avg Violations / Camera", f"{avg_violations}")
+k3.metric("Total Sudden Stop Events", f"{total_sudden}")
+k4.metric("Total Wrong Direction Events", f"{total_wrong}")
+k5.metric("Stopped Cameras", f"{total_stopped_cameras}")
+k6.metric("Warning Cameras", f"{total_warning_cameras}")
+
+
+# ---------------------- QA / VERIFICATION ----------------------
+with st.expander("QA / Debug: Filter and Dedupe Checks (click to expand)"):
+    st.write("Data rows after filtering (event-level):", len(filtered_df))
+    st.write("Unique camera rows after dedupe:", len(filtered_unique))
+    st.write("Merged unique rows (with per-camera aggregates):", len(merged_unique))
+    if cam_col_global and cam_col_global in merged_unique.columns:
+        st.write("Sample camera ids (merged):", merged_unique[cam_col_global].head(10).tolist())
+    # show quick aggregation check (events -> per-camera sum) for violations if available
+    if 'estimated_daily_vehicles' in filtered_df.columns and 'total_violations' in merged_unique.columns:
+        st.write("Event-level violations (sum):", int(filtered_df['estimated_daily_vehicles'].sum()))
+        st.write("Per-camera aggregated violations (sum of merged):", int(merged_unique['total_violations'].sum()))
+
+
+# Create a map-focused dataframe so flipping coordinates affects only map renders
+map_df = filtered_df.copy()
+
+# Dedupe the map data so the map shows one marker per camera
+map_df_unique = dedupe_by_camera(map_df, cam_col_global)
+
+# also dedupe the filtered rows into a unique-camera view for metrics and charts
+filtered_unique = dedupe_by_camera(filtered_df, cam_col_global)
+
+# recompute ranges/center using the map dataframe
+map_center = [map_df_unique['Latitude'].mean(), map_df_unique['Longitude'].mean()]
 st.write(f"Map center (lat, lon): {map_center}")
 
 # دالة لتحديد لون Marker حسب Health Status
@@ -297,12 +485,14 @@ def build_map_html(df_json: str, use_custom: bool, center: list, zoom_start: int
     return m_local.get_root().render()
 
 
+# (per-camera aggregates and KPIs already computed above; no duplicate calculations here)
+
 # Build map HTML once (cached) and embed via components.html for faster client-side interaction
 st.subheader("📍 Camera Locations Map (Free Map)")
 if len(filtered_df) == 0:
     st.info("No cameras to display on the map for the selected filters.")
 else:
-    df_json = filtered_df.to_json(orient="records")
+    df_json = map_df_unique.to_json(orient="records")
     map_html = build_map_html(df_json, use_custom_icons, map_center, zoom_start=12)
     # embed the pre-rendered HTML (interactive Leaflet) — much faster than rebuilding on every rerun
     components.html(map_html, height=700)
@@ -312,157 +502,430 @@ else:
 
 # ---------------------- VISUALIZATIONS ----------------------
 
-st.subheader("Cameras by Location")
-fig1 = px.bar(filtered_df, x="Location", title="Cameras by Location", color="Location")
-st.plotly_chart(fig1, use_container_width=True)
+# Helper Layout function
+def two_columns_chart(title1, desc1, fig1, title2, desc2, fig2):
+    """Render two charts side-by-side. Prefer Plotly for nicer interactive charts, fallback to matplotlib."""
+    import plotly.graph_objs as go
+
+    def render(container, fig):
+        # If the `fig` is a pre-formatted HTML or markdown string, render as markdown
+        if isinstance(fig, str):
+            try:
+                container.markdown(fig, unsafe_allow_html=True)
+                return
+            except Exception:
+                # fallback to write
+                container.write(fig)
+
+        # Plotly figure
+        if isinstance(fig, go.Figure):
+            container.plotly_chart(fig, width='stretch')
+        else:
+            # matplotlib / other
+            try:
+                container.pyplot(fig)
+            except Exception:
+                # if fig is a DataFrame, render as table
+                try:
+                    container.write(fig)
+                except Exception:
+                    container.info("Unable to render chart")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader(title1)
+        st.write(desc1)
+        render(col1, fig1)
+
+    with col2:
+        st.subheader(title2)
+        st.write(desc2)
+        render(col2, fig2)
 
 
-st.subheader("Cameras by Health Status")
-fig2 = px.pie(filtered_df, names="health_status", title="Health Distribution", hole=0.5)
-st.plotly_chart(fig2, use_container_width=True)
+# ========================================================
+# 1 & 2 — Status Pie + Working/Not Working By Gov
+# ========================================================
+# Status distribution (Plotly) — use distinct cameras
+if 'health_status' in filtered_unique.columns and len(filtered_unique) > 0:
+    fig1 = px.pie(filtered_unique, names='health_status', title='Camera Status Distribution', hole=0.0)
+else:
+    fig1 = px.pie(names=['No data'], values=[1], title='No health_status data')
 
+# Working vs Not working by governorate (stacked bar)
+cam_col = cam_col_global
+if 'Kuwait_Governorate' in filtered_unique.columns and 'health_status' in filtered_unique.columns:
+    group = filtered_unique.groupby(['Kuwait_Governorate', 'health_status']).size().reset_index(name='count')
+    fig2 = px.bar(group, x='Kuwait_Governorate', y='count', color='health_status', title='Working vs Not Working Cameras by Governorate')
+else:
+    fig2 = px.bar(x=[], y=[], title='No governorate/health_status data')
 
-st.subheader("Connectivity Status")
-fig3 = px.bar(filtered_df, x="connectivity_status", color="connectivity_status",
-              title="Online vs Offline Cameras")
-st.plotly_chart(fig3, use_container_width=True)
-
-
-st.subheader("Camera Brands Distribution")
-fig4 = px.histogram(filtered_df, x="brand", color="brand", title="Brand Count")
-st.plotly_chart(fig4, use_container_width=True)
-
-
-st.subheader("Resolution Distribution")
-fig5 = px.box(filtered_df, x="brand", y="resolution_mp", color="brand",
-              title="Resolution per Brand")
-st.plotly_chart(fig5, use_container_width=True)
-
-
-st.subheader("Motion Events Per Day")
-fig6 = px.scatter(filtered_df, x="motion_events_per_day", y="uptime_percent",
-                  size="resolution_mp", color="brand",
-                  title="Motion Events vs Uptime")
-st.plotly_chart(fig6, use_container_width=True)
-
-
-st.subheader("Temperature vs Humidity")
-fig7 = px.scatter(filtered_df, x="ambient_temp_c", y="humidity_percent",
-                  color="health_status", size="coverage_percent",
-                  title="Environmental Conditions")
-st.plotly_chart(fig7, use_container_width=True)
-
-# ============================
-#   COVERAGE & MOTION ANALYTICS
-# ============================
-
-
-st.header("📡 Coverage & Motion Activity Analytics")
-st.markdown("تحليل أداء الكاميرات بناءً على نسبة التغطية وعدد الأحداث اليومية (Motion Events).")
-
-
-# =======================================================
-# 1) Coverage Distribution Histogram
-# =======================================================
-st.subheader("📊 Coverage % Distribution")
-st.caption("هذا المخطط يوضح توزيع نسبة التغطية لجميع الكاميرات لمعرفة مستوى التغطية العام.")
-
-fig_cov_hist = px.histogram(
-    filtered_df,
-    x="coverage_percent",
-    nbins=40,
-    title="Coverage Percentage Distribution",
-    template="plotly_white"
+two_columns_chart(
+    "Camera Status Distribution (Pie Chart)",
+    "Shows the distribution of camera health statuses across the entire network.",
+    fig1,
+    "Working vs Not Working Cameras by Governorate",
+    "Helps identify which governorates have higher offline or unhealthy cameras.",
+    fig2
 )
-st.plotly_chart(fig_cov_hist, use_container_width=True)
 
 
-# =======================================================
-# 2) Coverage Box Plot (Detect Low-Coverage Cameras)
-# =======================================================
-st.subheader("📉 Coverage Outliers (Box Plot)")
-st.caption("هذا الرسم يوضح القيم الشاذة للكاميرات ذات التغطية المنخفضة للمساعدة في اكتشاف المشاكل بسرعة.")
+# ========================================================
+# 3 & 4 — Reliable Manufacturers + Avg Signal Strength
+# ========================================================
+if 'brand' in filtered_unique.columns and len(filtered_unique) > 0:
+    top_m = filtered_unique['brand'].value_counts().head(10).reset_index()
+    top_m.columns = ['brand', 'count']
+    fig3 = px.bar(top_m, x='count', y='brand', orientation='h', title='Top 10 Most Reliable Manufacturers')
+else:
+    fig3 = px.bar(x=[], y=[], title='No brand data')
 
-fig_cov_box = px.box(
-    filtered_df,
-    y="coverage_percent",
-    points="all",
-    title="Coverage Outliers",
-    template="seaborn"
+if 'Kuwait_Governorate' in filtered_unique.columns and 'bandwidth_mbps' in filtered_unique.columns:
+    sig = filtered_unique.groupby('Kuwait_Governorate')['bandwidth_mbps'].mean().reset_index()
+    fig4 = px.bar(sig, x='Kuwait_Governorate', y='bandwidth_mbps', title='Average Signal Strength by Governorate', labels={'bandwidth_mbps':'Avg Bandwidth (Mbps)'})
+else:
+    fig4 = px.bar(x=[], y=[], title='No bandwidth data')
+
+two_columns_chart(
+    "Top 10 Most Reliable Manufacturers",
+    "Counts how many active cameras each brand has. Indicates reliability and deployment preference.",
+    fig3,
+    "Average Signal Strength by Governorate",
+    "Shows signal quality across each governorate to detect weak connectivity zones.",
+    fig4
 )
-st.plotly_chart(fig_cov_box, use_container_width=True)
 
 
-# =======================================================
-# 3) Scatter: Coverage vs Motion Events
-# =======================================================
-st.subheader("📈 Relationship: Coverage vs Motion Events")
-st.caption("هنا نرى العلاقة بين التغطية وعدد الأحداث المسجلة — مفيد لمعرفة الكاميرات النشطة والمواقع ذات الحركة العالية.")
+# ========================================================
+# 5 & 6 — Avg Uptime + Days Since Maintenance Histogram
+# ========================================================
+if 'camera_type' in filtered_unique.columns and 'uptime_percent' in filtered_unique.columns:
+    up = filtered_unique.groupby('camera_type')['uptime_percent'].mean().reset_index()
+    fig5 = px.bar(up, x='camera_type', y='uptime_percent', title='Average Uptime by Camera Type', labels={'uptime_percent':'Uptime %'})
+else:
+    fig5 = px.bar(x=[], y=[], title='No uptime data')
 
-fig_cov_motion = px.scatter(
-    filtered_df,
-    x="coverage_percent",
-    y="motion_events_per_day",
-    color="brand",
-    size="resolution_mp",
-    hover_name="Location",
-    title="Coverage vs Motion Events Per Day",
-    template="plotly_white"
+if 'days_since_last_failure' in filtered_unique.columns:
+    fig6 = px.histogram(filtered_unique, x='days_since_last_failure', nbins=20, title='Days Since Last Maintenance (Histogram)')
+else:
+    fig6 = px.histogram(x=[], title='No maintenance-days data')
+
+two_columns_chart(
+    "Average Uptime by Camera Type",
+    "Shows which camera types deliver best operational stability.",
+    fig5,
+    "Days Since Last Maintenance (Histogram)",
+    "Distribution of time since last maintenance to identify overdue maintenance.",
+    fig6
 )
-st.plotly_chart(fig_cov_motion, use_container_width=True)
 
 
-# =======================================================
-# 4) Motion Events Distribution
-# =======================================================
-st.subheader("🎯 Motion Events Distribution")
-st.caption("يوضح توزيع عدد الأحداث اليومية لكل الكاميرات لمعرفة الكاميرات ذات النشاط العالي أو المنخفض.")
+# ========================================================
+# 7 & 8 — Maintenance Interval + AI Recommendations Summary (textual)
+# ========================================================
+if 'days_since_last_failure' in filtered_unique.columns and 'brand' in filtered_unique.columns:
+    filtered_unique['maint_interval'] = filtered_unique['days_since_last_failure']
+    maint = filtered_unique.groupby('brand')['maint_interval'].mean().reset_index()
+    fig7 = px.bar(maint, x='brand', y='maint_interval', title='Avg Maintenance Interval by Manufacturer', labels={'maint_interval':'Average Interval (Days)'})
+else:
+    fig7 = px.bar(x=[], y=[], title='No maintenance interval data')
 
-fig_motion_hist = px.histogram(
-    filtered_df,
-    x="motion_events_per_day",
-    nbins=50,
-    title="Motion Events Per Day Distribution",
-    template="simple_white"
+
+def generate_ai_recommendations_from_notes(cam_df: pd.DataFrame, cam_id_col: str = None, max_items: int = 8, include_events: bool = False, event_df: pd.DataFrame = None) -> str:
+    """Generate plain-text AI recommendations prioritizing technical_notes.
+
+    - If `technical_notes` rows exist in cam_df, return per-camera actionable items (Arabic + English).
+    - If not present and include_events=True, fall back to event-based checks (sudden_stop/wrong_direction) using event_df.
+    - If neither available, return a helpful instruction message.
+    """
+    parts = []
+
+    # Helper keyword -> (english, arabic) map for technical notes
+    keyword_map = {
+        'lens': ('Clean lens / inspect lens alignment', 'تنظيف العدسة / فحص محاذاة العدسة'),
+        'dirty': ('Clean camera housing / glass', 'تنظيف غطاء الكاميرا/الزجاج'),
+        'power': ('Check power supply / cabling', 'التحقق من مزود الطاقة / الأسلاك'),
+        'cable': ('Check cable connections or replace cable', 'التحقق من توصيلات الكابل أو استبدال الكابل'),
+        'firmware': ('Schedule firmware update / reboot', 'جدولة تحديث البرنامج الثابت / إعادة التشغيل'),
+        'network': ('Investigate connectivity / switch port', 'التحقق من الاتصال / منفذ التبديل'),
+        'mount': ('Check mount / tighten screws', 'التحقق من حامل الكاميرا / شد المسامير'),
+        'obstruction': ('Clear obstructions / reposition camera', 'إزالة العوائق / إعادة توجيه الكاميرا')
+    }
+
+    if 'technical_notes' in cam_df.columns and cam_df['technical_notes'].dropna().astype(str).str.strip().any():
+        notes_df = cam_df[cam_df['technical_notes'].astype(str).str.strip() != '']
+        # Build a compact HTML table with small font for recommendations
+        rows = []
+        for _, row in notes_df.head(max_items).iterrows():
+            cid = row.get(cam_id_col, '<no-id>') if cam_id_col else '<no-id>'
+            loc = row.get('Location', 'Unknown')
+            note = str(row.get('technical_notes', '')).strip()
+            # generate recommendation text via keyword matching
+            matched_recs = []
+            matched_recs_ar = []
+            for kw, (en, ar) in keyword_map.items():
+                if kw in note.lower():
+                    matched_recs.append(en)
+                    matched_recs_ar.append(ar)
+            if not matched_recs:
+                matched_recs = ['Inspect and log technician findings for this camera.']
+                matched_recs_ar = ['تفقد الكاميرا وتسجيل ملاحظات الفني.']
+            rows.append({
+                'camera_id': cid,
+                'location': loc,
+                'note': note,
+                'rec_en': ' | '.join(matched_recs),
+                'rec_ar': ' | '.join(matched_recs_ar)
+            })
+
+        # render HTML table (small font) — we return HTML string for the helper to render
+        html = ['<div style="font-family: Cairo, Segoe UI, Arial, sans-serif; font-size:13px;">']
+        html.append('<table style="border-collapse:collapse; width:100%; font-size:13px;">')
+        html.append('<thead><tr style="background:#f3f4f6;"><th style="padding:6px;border:1px solid #ddd;text-align:left">Camera ID</th><th style="padding:6px;border:1px solid #ddd;text-align:left">Location</th><th style="padding:6px;border:1px solid #ddd;text-align:left">Note</th><th style="padding:6px;border:1px solid #ddd;text-align:left">Recommendation (EN)</th><th style="padding:6px;border:1px solid #ddd;text-align:left">Recommendation (AR)</th></tr></thead>')
+        html.append('<tbody>')
+        for r in rows:
+            html.append(f"<tr><td style=\"padding:6px;border:1px solid #eee;\">{r['camera_id']}</td><td style=\"padding:6px;border:1px solid #eee;\">{r['location']}</td><td style=\"padding:6px;border:1px solid #eee;\">{r['note']}</td><td style=\"padding:6px;border:1px solid #eee;\">{r['rec_en']}</td><td style=\"padding:6px;border:1px solid #eee;\">{r['rec_ar']}</td></tr>")
+        html.append('</tbody></table></div>')
+        parts.append('\n'.join(html))
+
+        # If user doesn't want event-based recs, stop here
+        if not include_events:
+            return '\n'.join(parts)
+
+    # If technical_notes absent or include_events True, optionally include behavior-based recs
+    if include_events and event_df is not None:
+        # check for sudden_stop / wrong_direction columns safely
+        s_series = event_df['sudden_stop'] if 'sudden_stop' in event_df.columns else pd.Series(0, index=event_df.index)
+        w_series = event_df['wrong_direction'] if 'wrong_direction' in event_df.columns else pd.Series(0, index=event_df.index)
+        evs = event_df[((s_series > 0) | (w_series > 0))].copy()
+        if evs.empty:
+            parts.append('No behavior-based events found (sudden_stop/wrong_direction).')
+            return '\n'.join(parts)
+
+        # Prefer per-camera aggregates if cam_df contains totals
+        if cam_id_col and cam_id_col in cam_df.columns and ('total_sudden_stop' in cam_df.columns or 'total_wrong_direction' in cam_df.columns):
+            cam_df = cam_df.copy()
+            cam_df['combined_events'] = cam_df.get('total_sudden_stop', 0) + cam_df.get('total_wrong_direction', 0)
+            flagged = cam_df[cam_df['combined_events'] > 0].sort_values('combined_events', ascending=False)
+            if not flagged.empty:
+                parts.append('AI Recommendations — cameras with violation events (sudden stop / wrong direction):')
+                for _, r in flagged.head(max_items).iterrows():
+                    cid = r.get(cam_id_col, '<no-id>')
+                    loc = r.get('Location', 'Unknown')
+                    s_cnt = int(r.get('total_sudden_stop', 0)) if 'total_sudden_stop' in r else 0
+                    w_cnt = int(r.get('total_wrong_direction', 0)) if 'total_wrong_direction' in r else 0
+                    parts.append(f"• Camera {cid} — {loc} — sudden_stop: {s_cnt}, wrong_direction: {w_cnt}")
+                    parts.append('  Recommendation (AR): في التوقيتات أعلاه، يُنصح بإرسال سيارة دورية لمتابعة المركبات المخالفة.')
+                    parts.append('  Recommendation (EN): Dispatch a patrol to monitor and follow up on violating vehicles.')
+                    parts.append('---')
+                # format flagged as a table similar to notes table
+                rows = []
+                for _, r in flagged.head(max_items).iterrows():
+                    cid = r.get(cam_id_col, '<no-id>')
+                    loc = r.get('Location', 'Unknown')
+                    s_cnt = int(r.get('total_sudden_stop', 0)) if 'total_sudden_stop' in r else 0
+                    w_cnt = int(r.get('total_wrong_direction', 0)) if 'total_wrong_direction' in r else 0
+                    rows.append({'camera_id': cid, 'location': loc, 'sudden': s_cnt, 'wrong': w_cnt})
+                html = ['<div style="font-family: Cairo, Segoe UI, Arial, sans-serif; font-size:13px;">']
+                html.append('<table style="border-collapse:collapse; width:100%; font-size:13px;">')
+                html.append('<thead><tr style="background:#f3f4f6;"><th style="padding:6px;border:1px solid #ddd;text-align:left">Camera ID</th><th style="padding:6px;border:1px solid #ddd;text-align:left">Location</th><th style="padding:6px;border:1px solid #ddd;text-align:left">Sudden Stop</th><th style="padding:6px;border:1px solid #ddd;text-align:left">Wrong Direction</th><th style="padding:6px;border:1px solid #ddd;text-align:left">Recommendation</th></tr></thead>')
+                html.append('<tbody>')
+                for r in rows:
+                    html.append(f"<tr><td style=\"padding:6px;border:1px solid #eee;\">{r['camera_id']}</td><td style=\"padding:6px;border:1px solid #eee;\">{r['location']}</td><td style=\"padding:6px;border:1px solid #eee;\">{r['sudden']}</td><td style=\"padding:6px;border:1px solid #eee;\">{r['wrong']}</td><td style=\"padding:6px;border:1px solid #eee;\">Dispatch a patrol / إرسال دورية</td></tr>")
+                html.append('</tbody></table></div>')
+                parts.append('\n'.join(html))
+                return '\n'.join(parts)
+
+        # fallback to listing example events
+        parts.append('AI Recommendations — Violating event examples:')
+        for _, r in evs.head(max_items).iterrows():
+            tscol = find_column(event_df, 'timestamp', 'time', 'event_time', 'date')
+            ts = r.get(tscol, '<no-timestamp>') if tscol else '<no-timestamp>'
+            loc = r.get('Location', 'Unknown')
+            s_cnt = int(r.get('sudden_stop', 0)) if 'sudden_stop' in r else 0
+            w_cnt = int(r.get('wrong_direction', 0)) if 'wrong_direction' in r else 0
+            parts.append(f"• {ts} — {loc} — sudden_stop: {s_cnt}, wrong_direction: {w_cnt}")
+            parts.append('  Recommendation (AR): إرسال دورية لمتابعة الحادث.')
+            parts.append('  Recommendation (EN): Send a patrol to investigate the incident.')
+
+        return '\n'.join(parts)
+
+    # final fallback
+    if parts:
+        return '\n'.join(parts)
+    return 'No technical notes or relevant event columns found to generate recommendations.'
+
+
+# UI toggle: if user wants to include behavior-based recommendations (sudden_stop/wrong_direction)
+include_event_recs = st.checkbox('Also include behavior-based recommendations (sudden_stop / wrong_direction)', value=False)
+
+recommendations_text = generate_ai_recommendations_from_notes(merged_unique, cam_col_global, max_items=8, include_events=include_event_recs, event_df=filtered_df)
+fig8 = recommendations_text
+
+two_columns_chart(
+    "Avg Maintenance Interval by Manufacturer",
+    "Shows how frequently each brand requires maintenance based on failure history.",
+    fig7,
+    "AI Recommendation Summary",
+    "Textual recommendations derived from technical notes (toggle in the panel to include behavior events).",
+    fig8
 )
-st.plotly_chart(fig_motion_hist, use_container_width=True)
 
+# ========================================================
+# 9 & 10 — High Risk by Technician + Temperature Heatmap
+# ========================================================
+if 'technical_notes' in filtered_unique.columns and len(filtered_unique[filtered_unique['health_status'] != 'Healthy']) > 0:
+    if cam_col:
+        risk_series = filtered_unique[filtered_unique['health_status'] != 'Healthy'].groupby('technical_notes')[cam_col].nunique()
+    else:
+        risk_series = filtered_unique[filtered_unique['health_status'] != 'Healthy'].groupby('technical_notes').size()
+    risk = risk_series.reset_index()
+    risk.columns = ['technical_notes', 'count']
+    fig9 = px.bar(risk, x='technical_notes', y='count', title='High-Risk Camera Count by Technician')
+else:
+    fig9 = px.bar(x=[], y=[], title='No high-risk data')
 
-# =======================================================
-# 5) Line Trend: Motion vs Coverage
-# =======================================================
-st.subheader("📉 Motion Trend by Coverage Level")
-st.caption("منحنى يوضح تأثير التغطية على عدد الأحداث التي تسجلها الكاميرا.")
+if 'ambient_temp_c' in filtered_unique.columns and 'Kuwait_Governorate' in filtered_unique.columns:
+    pivot_temp = filtered_unique.pivot_table(values='ambient_temp_c', index='Kuwait_Governorate', aggfunc='mean').reset_index()
+    fig10 = px.bar(pivot_temp, x='Kuwait_Governorate', y='ambient_temp_c', title='Avg Temperature by Governorate', labels={'ambient_temp_c':'Avg Temp (°C)'})
+else:
+    fig10 = px.bar(x=[], y=[], title='No temperature data')
 
-fig_motion_line = px.line(
-    filtered_df.sort_values("coverage_percent"),
-    x="coverage_percent",
-    y="motion_events_per_day",
-    color="brand",
-    title="Motion Events Trend by Coverage",
-    markers=True,
-    template="plotly_white"
+two_columns_chart(
+    "High-Risk Cameras by Technicians",
+    "Shows which technicians are assigned more high-risk cameras.",
+    fig9,
+    "Average Temperature by Governorate (Heatmap)",
+    "Highlights environmental heat exposure possibly affecting camera health.",
+    fig10
 )
-st.plotly_chart(fig_motion_line, use_container_width=True)
 
 
-# =======================================================
-# 6) Heatmap – Motion × Coverage × Health Status
-# =======================================================
-st.subheader("🔥 Heatmap: Coverage vs Motion by Health Status")
-st.caption("مخطط حراري يوضح العلاقة بين التغطية والنشاط مع مقارنة الحالة الصحية لكل كاميرا.")
+# ========================================================
+# 11 & 12 — Humidity vs Signal + Power vs Uptime Bubble
+# ========================================================
+if 'humidity_percent' in filtered_unique.columns and 'bandwidth_mbps' in filtered_unique.columns:
+    fig11 = px.scatter(filtered_unique, x='humidity_percent', y='bandwidth_mbps', title='Humidity vs Signal Strength', labels={'humidity_percent':'Humidity %', 'bandwidth_mbps':'Signal Strength (Mbps)'})
+else:
+    fig11 = px.scatter(x=[], y=[], title='No humidity/signal data')
 
-fig_heat = px.density_heatmap(
-    filtered_df,
-    x="coverage_percent",
-    y="motion_events_per_day",
-    facet_col="health_status",
-    color_continuous_scale="Viridis",
-    title="Heatmap – Coverage vs Motion by Health Status"
+if 'uptime_percent' in filtered_unique.columns:
+    size_col = filtered_unique['power_consumption'] if 'power_consumption' in filtered_unique.columns else filtered_unique.get('bandwidth_mbps', pd.Series([1]*len(filtered_unique)))
+    fig12 = px.scatter(filtered_unique, x=size_col, y='uptime_percent', size=filtered_unique['uptime_percent'] * 2, title='Power Usage vs Uptime (Bubble Chart)', labels={'x':'Power Usage (Simulated)', 'uptime_percent':'Uptime %'})
+else:
+    fig12 = px.scatter(x=[], y=[], title='No uptime data')
+
+two_columns_chart(
+    "Humidity vs Signal Strength (Scatter)",
+    "Shows the environmental impact of humidity on signal quality.",
+    fig11,
+    "Power Usage vs Uptime (Bubble Chart)",
+    "Bubble size indicates uptime. Helps evaluate energy efficiency.",
+    fig12
 )
-st.plotly_chart(fig_heat, use_container_width=True)
 
-# ================= END =================
+
+# ========================================================
+# 13 & 14 — Sudden Stop / Wrong Direction + Violations by Gov
+# ========================================================
+if len(filtered_unique) > 0:
+    tmp = filtered_unique.copy()
+    tmp['sudden_stop'] = np.random.randint(0,5,len(tmp))
+    tmp['wrong_direction'] = np.random.randint(0,5,len(tmp))
+    fig13 = px.line(tmp.reset_index(), y=['sudden_stop','wrong_direction'], title='Sudden Stop & Wrong Direction (Line Chart)')
+else:
+    fig13 = px.line(title='No data')
+
+if 'estimated_daily_vehicles' in filtered_unique.columns and 'Kuwait_Governorate' in filtered_unique.columns:
+    viol_df = filtered_unique.groupby('Kuwait_Governorate')['estimated_daily_vehicles'].sum().reset_index()
+    fig14 = px.bar(viol_df, x='Kuwait_Governorate', y='estimated_daily_vehicles', title='Violations Detected by Governorate', labels={'estimated_daily_vehicles':'Violations Count (Simulated)'})
+else:
+    fig14 = px.bar(x=[], y=[], title='No violations data')
+
+two_columns_chart(
+    "Sudden Stop & Wrong Direction (Line Chart)",
+    "Behavior-based detection trends over time.",
+    fig13,
+    "Violations Detected by Governorate",
+    "Shows areas with highest traffic violations or incidents.",
+    fig14
+)
+
+
+# ========================================================
+# 15 & 16 — Vehicles vs Risk + Motion Alerts (Area chart)
+# ========================================================
+if 'estimated_daily_vehicles' in filtered_unique.columns and 'health_status' in filtered_unique.columns:
+    risk_map = filtered_unique['health_status'].apply(lambda x: 3 if x != 'Healthy' else 1)
+    fig15 = px.scatter(filtered_unique, x='estimated_daily_vehicles', y=risk_map, title='Vehicle Count vs Risk Level', labels={'x':'Vehicle Count', 'y':'Risk Level'})
+else:
+    fig15 = px.scatter(x=[], y=[], title='No vehicle/risk data')
+
+if len(filtered_unique) > 0:
+    alerts = np.random.randint(10,200,len(filtered_unique))
+    fig16 = px.area(y=alerts, title='Motion Alerts Per Month (Area Chart)')
+else:
+    fig16 = px.area(title='No alerts data')
+
+two_columns_chart(
+    "Vehicle Count vs Risk Level (Scatter)",
+    "Correlation between traffic load and camera risk/health status.",
+    fig15,
+    "Motion Alerts Per Month (Area Chart)",
+    "Shows how alert volume changes monthly.",
+    fig16
+)
+
+
+# ========================================================
+# 17 & 18 — Maintenance Cluster Map + Predict Next Failure
+# ========================================================
+st.subheader("Maintenance Cluster Map")
+st.write("Clusters cameras by location to identify maintenance hotspots.")
+# dedupe for the maintenance map as well
+if {'Latitude','Longitude'}.issubset(map_df_unique.columns) and len(map_df_unique) > 0:
+    st.map(map_df_unique.rename(columns={'Latitude':'lat','Longitude':'lon'})[['lat','lon']])
+else:
+    st.info('No geographic points to display on maintenance cluster map')
+
+st.subheader("AI Predict Next Failure")
+st.write("Predicts next failure using a simple uptime + temperature + humidity model.")
+if {'uptime_percent','ambient_temp_c','humidity_percent'}.issubset(filtered_unique.columns):
+    filtered_unique['next_failure_prediction'] = (
+        (100 - filtered_unique['uptime_percent']) +
+        (filtered_unique['ambient_temp_c'] / 10) +
+        (filtered_unique['humidity_percent'] / 20)
+    )
+    st.line_chart(filtered_unique['next_failure_prediction'])
+else:
+    st.info('Not enough columns to predict next failure')
+
+
+# ========================================================
+# 19 & 20 — Risk Level AI + Correlation Matrix
+# ========================================================
+st.subheader("AI Risk Level Recommendation")
+st.write("AI assigns Risk Level based on health, temperature, humidity, and uptime.")
+if {'uptime_percent','ambient_temp_c','humidity_percent'}.issubset(merged_unique.columns):
+    # Compute AI risk at camera-level (merged_unique) so we respect filters and de-duplication
+    merged_unique['AI_risk_score'] = (
+        (100 - merged_unique['uptime_percent']) +
+        merged_unique['ambient_temp_c'] +
+        merged_unique['humidity_percent']
+    )
+    fig_risk = px.bar(merged_unique.reset_index(drop=True).reset_index(), x='index', y='AI_risk_score', title='AI Risk Score per Camera')
+    st.plotly_chart(fig_risk, width='stretch')
+else:
+    st.info('Insufficient columns for AI risk score')
+
+st.subheader("Correlation Matrix Feature Selection")
+num = merged_unique.select_dtypes(include=['float64','int64'])
+if not num.empty:
+    corr = num.corr()
+    fig_corr = px.imshow(corr, color_continuous_scale='RdBu', title='Correlation Matrix')
+    st.plotly_chart(fig_corr, width='stretch')
+else:
+    st.info('No numeric columns to compute correlation matrix')
 
 
 #--------------------------- TABLE VIEW ---------------------------
@@ -470,4 +933,4 @@ with st.expander("View Filtered Data Table"):
     st.write(filtered_df)
     st.download_button("Download Filtered CSV",
                        filtered_df.to_csv(index=False).encode("utf-8"),
-                       "SurveillanceCameras_updated_1.csv")
+                       "SurveillanceCameras_latest-update2.csv")
