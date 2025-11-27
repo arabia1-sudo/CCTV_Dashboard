@@ -393,10 +393,10 @@ total_warning_cameras = int(warning_mask.sum())
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("Total Violations", f"{total_violations}")
 k2.metric("Avg Violations / Camera", f"{avg_violations}")
-k3.metric("Total Sudden Stop Events", f"{total_sudden}")
-k4.metric("Total Wrong Direction Events", f"{total_wrong}")
-k5.metric("Stopped Cameras", f"{total_stopped_cameras}")
-k6.metric("Warning Cameras", f"{total_warning_cameras}")
+#k3.metric("Total Sudden Stop Events", f"{total_sudden}")
+#k4.metric("Total Wrong Direction Events", f"{total_wrong}")
+#k5.metric("Stopped Cameras", f"{total_stopped_cameras}")
+k3.metric("Warning Cameras", f"{total_warning_cameras}")
 
 
 # ---------------------- QA / VERIFICATION ----------------------
